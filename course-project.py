@@ -9,12 +9,8 @@ from tensorboard.plugins.hparams import api as hp
 
 # COMMAND ----------
 
-help(hp.RealInterval)
-
-# COMMAND ----------
-
-HP_NUM_UNITS = hp.HParam('num_units', hp.Discrete([128,256,512]))
-HP_DROPOUT = hp.HParam('dropout', hp.Discrete([0.4]))
+HP_NUM_UNITS = hp.HParam('num_units', hp.Discrete([64,128,256,512]))
+HP_DROPOUT = hp.HParam('dropout', hp.Discrete([0.1,0.2,0.3,0.4,0.5]))
 
 METRIC_ACCURACY = 'accuracy'
 
@@ -26,7 +22,7 @@ with tf.summary.create_file_writer('logs/hparam_tuning').as_default():
 
 # COMMAND ----------
 
-def train_model(hparams):
+def train_model(hparams, tune=False):
   input_shape = (28,28,1)
   model = tf.keras.models.Sequential([
     tf.keras.layers.Conv2D(32, kernel_size=(5, 5), activation='relu', input_shape=input_shape, padding='same'),
@@ -39,32 +35,33 @@ def train_model(hparams):
     tf.keras.layers.Dense(10, activation='softmax')
   ])
 
-  model.compile(optimizer='adam',
+  
+  n_split = 4
+  ep = 1 if (tune) else 3
+  
+  for train_index,test_index in KFold(n_split).split(x_data):
+    model.compile(optimizer='adam',
                 loss='sparse_categorical_crossentropy',
                 metrics=['accuracy'])
-  print(model.summary())
-  n_split = 4
-  
-  accuracy_list = []
-  for train_index,test_index in KFold(n_split).split(x_data):
     x_train,x_test=x_data[train_index],x_data[test_index]
     y_train,y_test=y_data[train_index],y_data[test_index]
   
-    model.fit(x_train, y_train,epochs=1, verbose=2)
+    model.fit(x_train, y_train,epochs=ep, verbose=2)
   
-    _, acc = model.evaluate(x_test,y_test, verbose=2)
-    accuracy_list.append(acc)
+    _, accuracy = model.evaluate(x_test,y_test, verbose=2)
+    if (tune): break
     
-  accuracy = np.array(accuracy_list).max() 
-  return accuracy
+  #accuracy = np.array(accuracy_list).max() 
+  return accuracy, model
 
 # COMMAND ----------
 
 def run(run_dir, hparams):
   with tf.summary.create_file_writer(run_dir).as_default():
     hp.hparams(hparams)  # record the values used in this trial
-    accuracy = train_model(hparams)
+    accuracy, _ = train_model(hparams, tune=True)
     tf.summary.scalar(METRIC_ACCURACY, accuracy, step=1)
+    return accuracy
 
 # COMMAND ----------
 
@@ -97,8 +94,8 @@ x_data = (x_data.values/255.0).reshape(-1,28,28,1)
 
 # COMMAND ----------
 
-session_num = 18
-
+session_num = 0
+result = dict()
 for num_units in HP_NUM_UNITS.domain.values:
   for dropout_rate in (HP_DROPOUT.domain.values):
     hparams = {
@@ -108,8 +105,19 @@ for num_units in HP_NUM_UNITS.domain.values:
     run_name = "run-%d" % session_num
     print('--- Starting trial: %s' % run_name)
     print({h.name: hparams[h] for h in hparams})
-    run('logs/hparam_tuning/' + run_name, hparams)
+    acc = run('logs/hparam_tuning/' + run_name, hparams)
+    result.update({(num_units, dropout_rate): acc})
     session_num += 1
+
+# COMMAND ----------
+
+param = max(result, key=result.get)
+print(param, result[param])
+
+# COMMAND ----------
+
+hparam = {HP_NUM_UNITS: param[0], HP_DROPOUT: param[1]}
+accuracy, model = train_model(hparam)
 
 # COMMAND ----------
 
@@ -127,4 +135,4 @@ outputDF = spark.createDataFrame(output)
  .write
  .format("csv")
  .options(delimiter=',', header="true")
- .save('FileStore/submission1'))
+ .save('FileStore/submission2'))
